@@ -305,7 +305,8 @@ function renderTopbar() {
 }
 
 function renderFab() {
-  return `<button class="fab" data-action="open-add-tx">+</button>`;
+  if (state.tab !== 'home' && state.tab !== 'lancamentos') return '';
+  return `<button class="fab" data-action="open-add-tx" aria-label="Novo lançamento">+</button>`;
 }
 
 function renderBottomNav() {
