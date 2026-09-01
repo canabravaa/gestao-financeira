@@ -291,7 +291,7 @@ function render() {
 
 function renderTopbar() {
   const titles = { home: 'Início', lancamentos: 'Lançamentos', cartoes: 'Cartões', categorias: 'Categorias', previsao: 'Previsão', conta: 'Conta' };
-  const showMonth = state.tab === 'home' || state.tab === 'lancamentos';
+  const showMonth = state.tab === 'home' || state.tab === 'lancamentos' || state.tab === 'previsao';
   return `
   <div class="topbar">
     <h1>${titles[state.tab]}</h1>
@@ -470,18 +470,56 @@ function renderCategorias() {
 }
 
 function renderPrevisao() {
-  const total = state.forecasts.reduce((a, f) => a + f.amount, 0);
-  const sorted = state.forecasts.slice().sort((a, b) => (a.dueDay || 99) - (b.dueDay || 99));
+  const totalPrevisto = state.forecasts.reduce((a, f) => a + f.amount, 0);
+  const totalRealizado = monthTotals(state.month).expense;
+
+  const previstoByCat = new Map();
+  for (const f of state.forecasts) previstoByCat.set(f.categoryId, (previstoByCat.get(f.categoryId) || 0) + f.amount);
+  const realizadoByCat = new Map();
+  for (const b of categoryBreakdown(state.month)) realizadoByCat.set(b.category.id, b.amount);
+
+  const catIds = new Set([...previstoByCat.keys(), ...realizadoByCat.keys()]);
+  const rows = [...catIds]
+    .map(id => {
+      const category = catById(id);
+      return category ? { category, previsto: previstoByCat.get(id) || 0, realizado: realizadoByCat.get(id) || 0 } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.previsto - a.previsto || b.realizado - a.realizado);
+
+  const sortedForecasts = state.forecasts.slice().sort((a, b) => (a.dueDay || 99) - (b.dueDay || 99));
+
   return `
   <section class="view">
     <div class="summary-card">
-      <div class="row"><span class="label">Previsão do mês</span><span class="value big">${fmtMoney(total)}</span></div>
+      <div class="row"><span class="label">Previsto</span><span class="value big">${fmtMoney(totalPrevisto)}</span></div>
+      <div class="divider"></div>
+      <div class="row"><span class="label">Realizado no mês</span><span class="value">${fmtMoney(totalRealizado)}</span></div>
+      <div class="row"><span class="label">Diferença</span><span class="value">${fmtMoney(totalPrevisto - totalRealizado)}</span></div>
     </div>
-    ${sorted.length === 0
-      ? emptyState('📅', 'Nenhuma conta prevista', 'Cadastre as despesas fixas que você espera pagar todo mês, como um baseline.')
-      : `<div class="tx-list">${sorted.map(renderForecastRow).join('')}</div>`}
+    <div class="hint" style="margin:0 4px 4px">"Previsto" é o baseline fixo cadastrado abaixo. "Realizado" é apurado a partir dos lançamentos de ${monthLabel(state.month)}.</div>
+
+    <div class="section-title">Previsto x realizado por categoria</div>
+    <div class="card">
+      ${rows.length === 0 ? `<div class="hint">Cadastre despesas previstas para comparar com o mês.</div>` : rows.map(r => {
+        const pct = r.previsto > 0 ? Math.min(100, (r.realizado / r.previsto) * 100) : (r.realizado > 0 ? 100 : 0);
+        const over = r.previsto > 0 && r.realizado > r.previsto;
+        return `
+        <div class="cat-row">
+          <div class="top">
+            <span class="name">${r.category.icon} ${escapeHtml(r.category.name)}</span>
+            <span class="amount">${fmtMoney(r.realizado)} / ${fmtMoney(r.previsto)}</span>
+          </div>
+          <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${over ? 'var(--expense)' : r.category.color}"></div></div>
+        </div>`;
+      }).join('')}
+    </div>
+
+    <div class="section-title">Contas previstas</div>
+    ${sortedForecasts.length === 0
+      ? emptyState('📅', 'Nenhuma conta prevista', 'Cadastre as despesas fixas que você espera pagar todo mês.')
+      : `<div class="tx-list">${sortedForecasts.map(renderForecastRow).join('')}</div>`}
     <button class="btn secondary" data-action="open-add-forecast" style="margin-top:14px">+ Nova despesa prevista</button>
-    <div class="hint" style="margin:10px 4px 0">Esses valores são apenas uma estimativa e não entram na conta de "Gastos do mês" — servem só de referência.</div>
   </section>`;
 }
 
