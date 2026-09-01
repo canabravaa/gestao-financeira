@@ -36,7 +36,7 @@ function escapeHtml(s) {
 }
 
 /* ===================== Storage ===================== */
-const KEYS = { categories: 'gf.categories', cards: 'gf.cards', transactions: 'gf.transactions', installments: 'gf.installments' };
+const KEYS = { categories: 'gf.categories', cards: 'gf.cards', transactions: 'gf.transactions', installments: 'gf.installments', forecasts: 'gf.forecasts' };
 function load(key) { try { return JSON.parse(localStorage.getItem(key)) || []; } catch { return []; } }
 function save(key, arr) { localStorage.setItem(key, JSON.stringify(arr)); }
 
@@ -74,7 +74,8 @@ const state = {
   cards: [],
   transactions: [],
   installments: [],
-  sheet: null, // {type: 'transaction'|'card'|'category', data: {...}}
+  forecasts: [],
+  sheet: null, // {type: 'transaction'|'card'|'category'|'forecast', data: {...}}
   catTypeFilter: 'expense',
   openCardId: null,
 };
@@ -88,12 +89,14 @@ function loadState() {
   state.cards = load(KEYS.cards);
   state.transactions = load(KEYS.transactions);
   state.installments = load(KEYS.installments);
+  state.forecasts = load(KEYS.forecasts);
 }
 function persistLocalOnly() {
   save(KEYS.categories, state.categories);
   save(KEYS.cards, state.cards);
   save(KEYS.transactions, state.transactions);
   save(KEYS.installments, state.installments);
+  save(KEYS.forecasts, state.forecasts);
 }
 function persist() {
   persistLocalOnly();
@@ -132,6 +135,7 @@ function attachRemoteSync(uid) {
       state.cards = remote.cards || state.cards;
       state.transactions = remote.transactions || state.transactions;
       state.installments = remote.installments || state.installments;
+      state.forecasts = remote.forecasts || state.forecasts;
       localStorage.setItem('gf.updatedAt', String(remote.updatedAt || 0));
       persistLocalOnly();
       render();
@@ -150,6 +154,7 @@ function pushToRemote(immediate) {
     remoteDocRef(currentUser.uid).set({
       categories: state.categories, cards: state.cards,
       transactions: state.transactions, installments: state.installments,
+      forecasts: state.forecasts,
       updatedAt,
     });
   };
@@ -275,6 +280,7 @@ function render() {
   else if (state.tab === 'lancamentos') parts.push(renderLancamentos());
   else if (state.tab === 'cartoes') parts.push(renderCartoes());
   else if (state.tab === 'categorias') parts.push(renderCategorias());
+  else if (state.tab === 'previsao') parts.push(renderPrevisao());
   else if (state.tab === 'conta') parts.push(renderConta());
   parts.push(renderFab());
   parts.push(renderBottomNav());
@@ -284,7 +290,7 @@ function render() {
 }
 
 function renderTopbar() {
-  const titles = { home: 'Início', lancamentos: 'Lançamentos', cartoes: 'Cartões', categorias: 'Categorias', conta: 'Conta' };
+  const titles = { home: 'Início', lancamentos: 'Lançamentos', cartoes: 'Cartões', categorias: 'Categorias', previsao: 'Previsão', conta: 'Conta' };
   const showMonth = state.tab === 'home' || state.tab === 'lancamentos';
   return `
   <div class="topbar">
@@ -308,6 +314,7 @@ function renderBottomNav() {
     { id: 'lancamentos', ic: '📋', label: 'Lançamentos' },
     { id: 'cartoes', ic: '💳', label: 'Cartões' },
     { id: 'categorias', ic: '🏷️', label: 'Categorias' },
+    { id: 'previsao', ic: '📅', label: 'Previsão' },
   ];
   if (fb) items.push({ id: 'conta', ic: currentUser ? '☁️' : '👤', label: 'Conta' });
   return `
@@ -462,6 +469,64 @@ function renderCategorias() {
   </section>`;
 }
 
+function renderPrevisao() {
+  const total = state.forecasts.reduce((a, f) => a + f.amount, 0);
+  const sorted = state.forecasts.slice().sort((a, b) => (a.dueDay || 99) - (b.dueDay || 99));
+  return `
+  <section class="view">
+    <div class="summary-card">
+      <div class="row"><span class="label">Previsão do mês</span><span class="value big">${fmtMoney(total)}</span></div>
+    </div>
+    ${sorted.length === 0
+      ? emptyState('📅', 'Nenhuma conta prevista', 'Cadastre as despesas fixas que você espera pagar todo mês, como um baseline.')
+      : `<div class="tx-list">${sorted.map(renderForecastRow).join('')}</div>`}
+    <button class="btn secondary" data-action="open-add-forecast" style="margin-top:14px">+ Nova despesa prevista</button>
+    <div class="hint" style="margin:10px 4px 0">Esses valores são apenas uma estimativa e não entram na conta de "Gastos do mês" — servem só de referência.</div>
+  </section>`;
+}
+
+function renderForecastRow(f) {
+  const cat = catById(f.categoryId) || { icon: '❓', color: '#999', name: '—' };
+  return `
+  <div class="tx-row" data-action="edit-forecast" data-id="${f.id}">
+    <div class="tx-icon" style="background:${cat.color}22;color:${cat.color}">${cat.icon}</div>
+    <div class="tx-mid">
+      <div class="tx-desc">${escapeHtml(f.description || cat.name)}</div>
+      <div class="tx-sub">${f.dueDay ? `Todo dia ${f.dueDay} · ` : ''}${escapeHtml(cat.name)}</div>
+    </div>
+    <div class="tx-amount expense">${fmtMoney(f.amount)}</div>
+  </div>`;
+}
+
+function forecastSheetBody(d) {
+  const isEdit = !!d.id;
+  const cats = state.categories.filter(c => c.type === 'expense');
+  return `
+  <h2>${isEdit ? 'Editar conta prevista' : 'Nova conta prevista'}</h2>
+  <div class="field">
+    <label>Valor esperado</label>
+    <input class="amount-input" id="f-amount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="0,00" value="${d.amount || ''}">
+  </div>
+  <div class="field">
+    <label>Descrição</label>
+    <input id="f-desc" type="text" placeholder="Ex: Aluguel" value="${escapeHtml(d.description || '')}">
+  </div>
+  <div class="field">
+    <label>Categoria</label>
+    <div class="chip-grid">
+      ${cats.map(c => `<div class="chip ${d.categoryId === c.id ? 'selected' : ''}" data-action="tx-set-cat" data-id="${c.id}">${c.icon} ${escapeHtml(c.name)}</div>`).join('') || '<div class="hint">Crie categorias na aba Categorias.</div>'}
+    </div>
+  </div>
+  <div class="field">
+    <label>Dia do vencimento (opcional)</label>
+    <input id="f-dueday" type="number" min="1" max="31" placeholder="Ex: 10" value="${d.dueDay || ''}">
+  </div>
+  <button class="btn" data-action="save-forecast">Salvar</button>
+  ${isEdit ? `<button class="btn danger" data-action="delete-forecast" data-id="${d.id}" style="margin-top:10px">Excluir</button>` : ''}
+  <button class="close-x" data-action="close-sheet" aria-label="Fechar">✕</button>
+  `;
+}
+
 function renderConta() {
   if (!currentUser) {
     return `
@@ -495,6 +560,7 @@ function renderSheet() {
   if (s.type === 'transaction') body = txSheetBody(s.data);
   else if (s.type === 'card') body = cardSheetBody(s.data);
   else if (s.type === 'category') body = categorySheetBody(s.data);
+  else if (s.type === 'forecast') body = forecastSheetBody(s.data);
   return `
   <div class="sheet-overlay" data-action="close-sheet-overlay">
     <div class="sheet" data-action="noop">
@@ -635,7 +701,7 @@ function syncSheetInputs() {
   const fields = {
     'f-amount': 'amount', 'f-desc': 'description', 'f-date': 'date',
     'f-cname': 'name', 'f-closing': 'closingDay', 'f-due': 'dueDay',
-    'f-catname': 'name', 'f-installments': 'installmentsCount',
+    'f-catname': 'name', 'f-installments': 'installmentsCount', 'f-dueday': 'dueDay',
   };
   for (const [id, key] of Object.entries(fields)) {
     const el = document.getElementById(id);
@@ -822,6 +888,39 @@ function onClick(e) {
     case 'close-sheet-overlay':
       state.sheet = null;
       render();
+      break;
+
+    case 'open-add-forecast':
+      state.sheet = { type: 'forecast', data: {} };
+      render();
+      break;
+    case 'edit-forecast': {
+      const f = state.forecasts.find(x => x.id === el.dataset.id);
+      if (f) { state.sheet = { type: 'forecast', data: { ...f } }; render(); }
+      break;
+    }
+    case 'save-forecast': {
+      const amount = parseFloat(document.getElementById('f-amount').value);
+      const description = document.getElementById('f-desc').value.trim();
+      if (!amount || amount <= 0) { alert('Informe um valor válido.'); return; }
+      if (!d.categoryId) { alert('Escolha uma categoria.'); return; }
+      const dueDayRaw = document.getElementById('f-dueday').value;
+      const dueDay = dueDayRaw ? parseInt(dueDayRaw, 10) : null;
+      const forecast = { id: d.id || uid(), description, amount, categoryId: d.categoryId, dueDay };
+      const idx = state.forecasts.findIndex(x => x.id === forecast.id);
+      if (idx >= 0) state.forecasts[idx] = forecast; else state.forecasts.push(forecast);
+      persist();
+      state.sheet = null;
+      render();
+      break;
+    }
+    case 'delete-forecast':
+      if (confirm('Excluir esta despesa prevista?')) {
+        state.forecasts = state.forecasts.filter(x => x.id !== el.dataset.id);
+        persist();
+        state.sheet = null;
+        render();
+      }
       break;
 
     case 'send-magic-link': {
