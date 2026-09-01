@@ -431,7 +431,10 @@ function renderCartoes() {
           `).join('')}
         </div>
         <div class="hint" style="margin:14px 4px 0">Esses valores mostram quanto vai cair na fatura em cada mês. O total da compra já conta como gasto no mês em que ela foi feita, na tela Início.</div>
-        <button class="btn danger" data-action="delete-card" data-id="${card.id}" style="margin-top:20px">Excluir cartão</button>
+        <div class="btn-row" style="margin-top:20px">
+          <button class="btn secondary" data-action="edit-card" data-id="${card.id}">Editar</button>
+          <button class="btn danger" data-action="delete-card" data-id="${card.id}">Excluir</button>
+        </div>
       </section>`;
     }
   }
@@ -670,8 +673,9 @@ function txSheetBody(d) {
 }
 
 function cardSheetBody(d) {
+  const isEdit = !!d.id;
   return `
-  <h2>Novo cartão</h2>
+  <h2>${isEdit ? 'Editar cartão' : 'Novo cartão'}</h2>
   <div class="field">
     <label>Nome</label>
     <input id="f-cname" type="text" placeholder="Ex: Nubank" value="${escapeHtml(d.name || '')}">
@@ -855,6 +859,11 @@ function onClick(e) {
       persist();
       state.sheet = null;
       render();
+      break;
+    }
+    case 'edit-card': {
+      const card = cardById(el.dataset.id);
+      if (card) { state.sheet = { type: 'card', data: { ...card } }; render(); }
       break;
     }
     case 'open-card-detail':
