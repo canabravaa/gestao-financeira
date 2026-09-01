@@ -89,15 +89,101 @@ function loadState() {
   state.transactions = load(KEYS.transactions);
   state.installments = load(KEYS.installments);
 }
-function persist() {
+function persistLocalOnly() {
   save(KEYS.categories, state.categories);
   save(KEYS.cards, state.cards);
   save(KEYS.transactions, state.transactions);
   save(KEYS.installments, state.installments);
 }
+function persist() {
+  persistLocalOnly();
+  pushToRemote();
+}
 
 function catById(id) { return state.categories.find(c => c.id === id); }
 function cardById(id) { return state.cards.find(c => c.id === id); }
+
+/* ===================== Sincronização (Firebase) =====================
+   Se firebase-config.js não tiver chaves preenchidas, tudo isto vira
+   no-op e o app continua funcionando 100% local, como antes. */
+const fb = (typeof FIREBASE_CONFIG !== 'undefined' && FIREBASE_CONFIG.apiKey && typeof firebase !== 'undefined')
+  ? (() => {
+      firebase.initializeApp(FIREBASE_CONFIG);
+      return { auth: firebase.auth(), db: firebase.firestore() };
+    })()
+  : null;
+
+let currentUser = null;
+let unsubscribeSnapshot = null;
+let pushTimer = null;
+
+function remoteDocRef(uid) {
+  return fb.db.collection('users').doc(uid).collection('sync').doc('data');
+}
+
+function attachRemoteSync(uid) {
+  detachRemoteSync();
+  unsubscribeSnapshot = remoteDocRef(uid).onSnapshot(doc => {
+    if (!doc.exists) { pushToRemote(true); return; }
+    const remote = doc.data();
+    const localUpdatedAt = Number(localStorage.getItem('gf.updatedAt') || 0);
+    if ((remote.updatedAt || 0) > localUpdatedAt) {
+      state.categories = remote.categories || state.categories;
+      state.cards = remote.cards || state.cards;
+      state.transactions = remote.transactions || state.transactions;
+      state.installments = remote.installments || state.installments;
+      localStorage.setItem('gf.updatedAt', String(remote.updatedAt || 0));
+      persistLocalOnly();
+      render();
+    }
+  });
+}
+function detachRemoteSync() {
+  if (unsubscribeSnapshot) { unsubscribeSnapshot(); unsubscribeSnapshot = null; }
+}
+function pushToRemote(immediate) {
+  if (!fb || !currentUser) return;
+  clearTimeout(pushTimer);
+  const doPush = () => {
+    const updatedAt = Date.now();
+    localStorage.setItem('gf.updatedAt', String(updatedAt));
+    remoteDocRef(currentUser.uid).set({
+      categories: state.categories, cards: state.cards,
+      transactions: state.transactions, installments: state.installments,
+      updatedAt,
+    });
+  };
+  if (immediate) doPush(); else pushTimer = setTimeout(doPush, 800);
+}
+
+function sendMagicLink(email) {
+  const actionCodeSettings = { url: window.location.href.split('?')[0], handleCodeInApp: true };
+  fb.auth.sendSignInLinkToEmail(email, actionCodeSettings).then(() => {
+    localStorage.setItem('gf.pendingEmail', email);
+    alert('Link enviado para ' + email + '. Abra seu e-mail e toque no link (nesse aparelho ou em outro) para entrar.');
+  }).catch(err => alert('Não consegui enviar o link: ' + err.message));
+}
+function signOutUser() {
+  detachRemoteSync();
+  fb.auth.signOut();
+}
+
+if (fb) {
+  fb.auth.onAuthStateChanged(user => {
+    currentUser = user;
+    if (user) attachRemoteSync(user.uid); else detachRemoteSync();
+    render();
+  });
+  if (fb.auth.isSignInWithEmailLink(window.location.href)) {
+    let email = localStorage.getItem('gf.pendingEmail');
+    if (!email) email = prompt('Confirme seu e-mail para concluir o login:');
+    if (email) {
+      fb.auth.signInWithEmailLink(email, window.location.href)
+        .then(() => { localStorage.removeItem('gf.pendingEmail'); history.replaceState(null, '', window.location.pathname); })
+        .catch(err => alert('Erro ao entrar: ' + err.message));
+    }
+  }
+}
 
 /* ===================== Domain logic ===================== */
 // Gera as alocações de fatura (parcelas) de uma compra no cartão.
@@ -189,6 +275,7 @@ function render() {
   else if (state.tab === 'lancamentos') parts.push(renderLancamentos());
   else if (state.tab === 'cartoes') parts.push(renderCartoes());
   else if (state.tab === 'categorias') parts.push(renderCategorias());
+  else if (state.tab === 'conta') parts.push(renderConta());
   parts.push(renderFab());
   parts.push(renderBottomNav());
   if (state.sheet) parts.push(renderSheet());
@@ -197,7 +284,7 @@ function render() {
 }
 
 function renderTopbar() {
-  const titles = { home: 'Início', lancamentos: 'Lançamentos', cartoes: 'Cartões', categorias: 'Categorias' };
+  const titles = { home: 'Início', lancamentos: 'Lançamentos', cartoes: 'Cartões', categorias: 'Categorias', conta: 'Conta' };
   const showMonth = state.tab === 'home' || state.tab === 'lancamentos';
   return `
   <div class="topbar">
@@ -222,6 +309,7 @@ function renderBottomNav() {
     { id: 'cartoes', ic: '💳', label: 'Cartões' },
     { id: 'categorias', ic: '🏷️', label: 'Categorias' },
   ];
+  if (fb) items.push({ id: 'conta', ic: currentUser ? '☁️' : '👤', label: 'Conta' });
   return `
   <div class="bottom-nav">
     <div class="bottom-nav-inner">
@@ -371,6 +459,32 @@ function renderCategorias() {
       `).join('')}
     </div>
     <button class="btn secondary" data-action="open-add-category" style="margin-top:18px">+ Nova categoria</button>
+  </section>`;
+}
+
+function renderConta() {
+  if (!currentUser) {
+    return `
+    <section class="view">
+      <div class="card">
+        <p style="margin-top:0">Entre com seu e-mail para sincronizar os lançamentos entre aparelhos.</p>
+        <div class="field">
+          <label>E-mail</label>
+          <input id="f-login-email" type="text" inputmode="email" autocomplete="email" placeholder="voce@email.com">
+        </div>
+        <button class="btn" data-action="send-magic-link">Enviar link de acesso</button>
+        <div class="hint">Vamos enviar um link por e-mail — sem senha. Abra o e-mail no aparelho onde quer entrar.</div>
+      </div>
+    </section>`;
+  }
+  return `
+  <section class="view">
+    <div class="card">
+      <div class="hint" style="margin-top:0">CONECTADO COMO</div>
+      <div style="font-weight:700">${escapeHtml(currentUser.email)}</div>
+      <div class="hint" style="margin-top:10px">Seus lançamentos estão sincronizados na nuvem e vão aparecer em qualquer aparelho onde você entrar com este e-mail.</div>
+      <button class="btn secondary" data-action="sign-out" style="margin-top:14px">Sair</button>
+    </div>
   </section>`;
 }
 
@@ -708,6 +822,16 @@ function onClick(e) {
     case 'close-sheet-overlay':
       state.sheet = null;
       render();
+      break;
+
+    case 'send-magic-link': {
+      const email = document.getElementById('f-login-email').value.trim();
+      if (!email) { alert('Informe seu e-mail.'); return; }
+      sendMagicLink(email);
+      break;
+    }
+    case 'sign-out':
+      signOutUser();
       break;
   }
 }
