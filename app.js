@@ -5,6 +5,26 @@ function uid() {
 function fmtMoney(v) {
   return (v < 0 ? '-' : '') + Math.abs(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
+// Máscara de valor "estilo caixa eletrônico": só dígitos, os 2 últimos viram centavos.
+// Evita o bug do teclado numérico do iOS, que mostra vírgula mas não deixa digitá-la.
+function formatAmountDigits(digitsStr) {
+  const digits = digitsStr.replace(/\D/g, '');
+  if (!digits) return '';
+  const padded = digits.padStart(3, '0');
+  const intPart = padded.slice(0, -2).replace(/^0+(?=\d)/, '');
+  const centsPart = padded.slice(-2);
+  const intFormatted = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  return intFormatted + ',' + centsPart;
+}
+function toMaskedAmount(v) {
+  if (v === undefined || v === null || v === '') return '';
+  if (typeof v === 'string') return v;
+  return formatAmountDigits(String(Math.round(v * 100)));
+}
+function parseMaskedAmount(str) {
+  if (!str) return NaN;
+  return parseFloat(str.replace(/\./g, '').replace(',', '.'));
+}
 function todayISO() {
   const d = new Date();
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
@@ -547,7 +567,7 @@ function forecastSheetBody(d) {
   <h2>${isEdit ? 'Editar conta prevista' : 'Nova conta prevista'}</h2>
   <div class="field">
     <label>Valor esperado</label>
-    <input class="amount-input" id="f-amount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="0,00" value="${d.amount || ''}">
+    <input class="amount-input" id="f-amount" type="text" inputmode="numeric" placeholder="0,00" value="${toMaskedAmount(d.amount)}">
   </div>
   <div class="field">
     <label>Descrição</label>
@@ -626,7 +646,7 @@ function txSheetBody(d) {
   </div>
   <div class="field">
     <label>Valor total</label>
-    <input class="amount-input" id="f-amount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="0,00" value="${d.amount || ''}">
+    <input class="amount-input" id="f-amount" type="text" inputmode="numeric" placeholder="0,00" value="${toMaskedAmount(d.amount)}">
   </div>
   <div class="field">
     <label>Descrição</label>
@@ -734,6 +754,9 @@ function categorySheetBody(d) {
 function afterRender() {}
 
 app.addEventListener('click', onClick);
+app.addEventListener('input', e => {
+  if (e.target.id === 'f-amount') e.target.value = formatAmountDigits(e.target.value);
+});
 
 // Antes de qualquer clique que possa disparar um re-render, guarda o que já
 // estiver digitado nos campos da folha aberta — senão um clique num chip
@@ -802,7 +825,7 @@ function onClick(e) {
       render();
       break;
     case 'save-tx': {
-      const amount = parseFloat(document.getElementById('f-amount').value);
+      const amount = parseMaskedAmount(document.getElementById('f-amount').value);
       const description = document.getElementById('f-desc').value.trim();
       const date = document.getElementById('f-date').value;
       if (!amount || amount <= 0) { alert('Informe um valor válido.'); return; }
@@ -948,7 +971,7 @@ function onClick(e) {
       break;
     }
     case 'save-forecast': {
-      const amount = parseFloat(document.getElementById('f-amount').value);
+      const amount = parseMaskedAmount(document.getElementById('f-amount').value);
       const description = document.getElementById('f-desc').value.trim();
       if (!amount || amount <= 0) { alert('Informe um valor válido.'); return; }
       if (!d.categoryId) { alert('Escolha uma categoria.'); return; }
