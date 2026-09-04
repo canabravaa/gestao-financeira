@@ -254,6 +254,39 @@ function deleteTransaction(id) {
   persist();
 }
 
+// Importação em lote (aba Conta). Recebe um array de objetos:
+// { date, description, amount, type, category, paymentMethod, cardName, installmentsCount }
+// categoria e cartão são resolvidos por NOME (os ids são UUIDs gerados por navegador).
+function importRows(rows) {
+  let ok = 0;
+  const falhas = [];
+  for (const r of rows) {
+    const type = r.type || 'expense';
+    const cat = state.categories.find(c => c.name === r.category && c.type === type);
+    if (!cat) { falhas.push(`Categoria não encontrada: "${r.category}" (${r.description || 'sem descrição'})`); continue; }
+    let cardId = null;
+    if (r.paymentMethod === 'credito') {
+      const card = state.cards.find(c => c.name === r.cardName);
+      if (!card) { falhas.push(`Cartão não encontrado: "${r.cardName}" (${r.description || 'sem descrição'})`); continue; }
+      cardId = card.id;
+    }
+    upsertTransaction({
+      id: uid(),
+      type,
+      amount: r.amount,
+      description: r.description || '',
+      date: r.date,
+      categoryId: cat.id,
+      paymentMethod: r.paymentMethod,
+      cardId,
+      installmentsCount: r.paymentMethod === 'credito' ? (r.installmentsCount || 1) : 1,
+      createdAt: Date.now(),
+    });
+    ok++;
+  }
+  return { ok, falhas };
+}
+
 function monthTransactions(monthKey) {
   return state.transactions.filter(t => monthKeyOf(t.date) === monthKey).sort((a, b) => b.date.localeCompare(a.date) || (b.createdAt || 0) - (a.createdAt || 0));
 }
@@ -590,6 +623,13 @@ function forecastSheetBody(d) {
 }
 
 function renderConta() {
+  const importCard = `
+    <div class="section-title">Importação em lote</div>
+    <div class="card">
+      <p style="margin-top:0">Cole um JSON com vários lançamentos de uma vez (gerado por você ou pelo Claude).</p>
+      <button class="btn secondary" data-action="open-import">Importar lançamentos</button>
+    </div>`;
+
   if (!currentUser) {
     return `
     <section class="view">
@@ -602,6 +642,7 @@ function renderConta() {
         <button class="btn" data-action="send-magic-link">Enviar link de acesso</button>
         <div class="hint">Vamos enviar um link por e-mail — sem senha. Abra o e-mail no aparelho onde quer entrar.</div>
       </div>
+      ${importCard}
     </section>`;
   }
   return `
@@ -612,7 +653,28 @@ function renderConta() {
       <div class="hint" style="margin-top:10px">Seus lançamentos estão sincronizados na nuvem e vão aparecer em qualquer aparelho onde você entrar com este e-mail.</div>
       <button class="btn secondary" data-action="sign-out" style="margin-top:14px">Sair</button>
     </div>
+    ${importCard}
   </section>`;
+}
+
+function importSheetBody(d) {
+  const result = d.result;
+  return `
+  <h2>Importar lançamentos</h2>
+  <div class="field">
+    <label>JSON dos lançamentos</label>
+    <textarea id="f-import-json" rows="10" placeholder='[{"date":"2026-08-05","description":"Mercado","amount":250.9,"type":"expense","category":"Alimentação","paymentMethod":"dinheiro"}]'>${escapeHtml(d.text || '')}</textarea>
+    <div class="hint">Cole aqui um array JSON. Categorias e cartões são resolvidos pelo nome exato já cadastrado no app.</div>
+  </div>
+  ${result ? `
+  <div class="hint" style="margin-bottom:14px">
+    <div style="color:var(--income);font-weight:700">${result.ok} lançamento(s) importado(s) com sucesso.</div>
+    ${result.falhas.length ? `<div style="color:var(--expense);font-weight:700;margin-top:6px">${result.falhas.length} falha(s):</div>
+      ${result.falhas.map(f => `<div>• ${escapeHtml(f)}</div>`).join('')}` : ''}
+  </div>` : ''}
+  <button class="btn" data-action="run-import">Importar</button>
+  <button class="close-x" data-action="close-sheet" aria-label="Fechar">✕</button>
+  `;
 }
 
 /* ===================== Sheets (modals) ===================== */
@@ -623,6 +685,7 @@ function renderSheet() {
   else if (s.type === 'card') body = cardSheetBody(s.data);
   else if (s.type === 'category') body = categorySheetBody(s.data);
   else if (s.type === 'forecast') body = forecastSheetBody(s.data);
+  else if (s.type === 'import') body = importSheetBody(s.data);
   return `
   <div class="sheet-overlay" data-action="close-sheet-overlay">
     <div class="sheet" data-action="noop">
@@ -768,6 +831,7 @@ function syncSheetInputs() {
     'f-amount': 'amount', 'f-desc': 'description', 'f-date': 'date',
     'f-cname': 'name', 'f-closing': 'closingDay', 'f-due': 'dueDay',
     'f-catname': 'name', 'f-installments': 'installmentsCount', 'f-dueday': 'dueDay',
+    'f-import-json': 'text',
   };
   for (const [id, key] of Object.entries(fields)) {
     const el = document.getElementById(id);
@@ -993,6 +1057,24 @@ function onClick(e) {
         render();
       }
       break;
+
+    case 'open-import':
+      state.sheet = { type: 'import', data: { text: '', result: null } };
+      render();
+      break;
+    case 'run-import': {
+      let rows;
+      try {
+        rows = JSON.parse(document.getElementById('f-import-json').value);
+        if (!Array.isArray(rows)) throw new Error('O JSON precisa ser um array de lançamentos.');
+      } catch (err) {
+        alert('JSON inválido: ' + err.message);
+        return;
+      }
+      d.result = importRows(rows);
+      render();
+      break;
+    }
 
     case 'send-magic-link': {
       const email = document.getElementById('f-login-email').value.trim();
