@@ -409,7 +409,7 @@ function renderHome() {
       <div class="row"><span class="label">Saldo</span><span class="value">${fmtMoney(balance)}</span></div>
     </div>
     ${oldExpense > 0 ? `
-    <div class="card" style="margin-top:12px;display:flex;justify-content:space-between;align-items:center">
+    <div class="card" data-action="open-old-detail" style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;cursor:pointer">
       <div>
         <div style="font-weight:600">Períodos anteriores</div>
         <div class="hint" style="margin-top:2px">Categoria OLD · fora do total do mês</div>
@@ -697,6 +697,17 @@ function importSheetBody(d) {
   `;
 }
 
+function oldDetailSheetBody() {
+  const items = monthTransactions(state.month).filter(t => t.type === 'expense' && isOldCategory(t.categoryId));
+  const total = items.reduce((a, t) => a + t.amount, 0);
+  return `
+  <h2>Períodos anteriores</h2>
+  <div class="hint" style="margin-top:-8px;margin-bottom:14px">${monthLabel(state.month)} · ${fmtMoney(total)} ao todo, fora do total do mês</div>
+  ${items.length === 0 ? `<div class="hint">Nenhum item OLD neste mês.</div>` : `<div class="tx-list">${items.map(renderTxRow).join('')}</div>`}
+  <button class="close-x" data-action="close-sheet" aria-label="Fechar">✕</button>
+  `;
+}
+
 /* ===================== Sheets (modals) ===================== */
 function renderSheet() {
   const s = state.sheet;
@@ -706,6 +717,7 @@ function renderSheet() {
   else if (s.type === 'category') body = categorySheetBody(s.data);
   else if (s.type === 'forecast') body = forecastSheetBody(s.data);
   else if (s.type === 'import') body = importSheetBody(s.data);
+  else if (s.type === 'old-detail') body = oldDetailSheetBody();
   return `
   <div class="sheet-overlay" data-action="close-sheet-overlay">
     <div class="sheet" data-action="noop">
@@ -1042,6 +1054,11 @@ function onClick(e) {
       break;
     case 'close-sheet-overlay':
       state.sheet = null;
+      render();
+      break;
+
+    case 'open-old-detail':
+      state.sheet = { type: 'old-detail', data: {} };
       render();
       break;
 
