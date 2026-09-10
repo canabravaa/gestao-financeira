@@ -290,14 +290,26 @@ function importRows(rows) {
 function monthTransactions(monthKey) {
   return state.transactions.filter(t => monthKeyOf(t.date) === monthKey).sort((a, b) => b.date.localeCompare(a.date) || (b.createdAt || 0) - (a.createdAt || 0));
 }
+// Categoria usada para lançamentos de períodos anteriores (import retroativo).
+// Fica de fora do total de "Gastos do mês" para não inflar o mês atual — mas
+// continua aparecendo à parte, e segue listada normalmente em Lançamentos.
+const OLD_CATEGORY_NAME = 'OLD';
+function isOldCategory(categoryId) {
+  const cat = catById(categoryId);
+  return !!cat && cat.name === OLD_CATEGORY_NAME;
+}
 function monthTotals(monthKey) {
   const txs = monthTransactions(monthKey);
-  let expense = 0, income = 0;
-  for (const t of txs) { if (t.type === 'expense') expense += t.amount; else income += t.amount; }
-  return { expense, income, balance: income - expense, txs };
+  let expense = 0, income = 0, oldExpense = 0;
+  for (const t of txs) {
+    if (t.type !== 'expense') { income += t.amount; continue; }
+    if (isOldCategory(t.categoryId)) { oldExpense += t.amount; continue; }
+    expense += t.amount;
+  }
+  return { expense, oldExpense, income, balance: income - expense, txs };
 }
 function categoryBreakdown(monthKey) {
-  const txs = monthTransactions(monthKey).filter(t => t.type === 'expense');
+  const txs = monthTransactions(monthKey).filter(t => t.type === 'expense' && !isOldCategory(t.categoryId));
   const map = new Map();
   for (const t of txs) {
     map.set(t.categoryId, (map.get(t.categoryId) || 0) + t.amount);
@@ -385,7 +397,7 @@ function renderBottomNav() {
 }
 
 function renderHome() {
-  const { expense, income, balance, txs } = monthTotals(state.month);
+  const { expense, oldExpense, income, balance, txs } = monthTotals(state.month);
   const breakdown = categoryBreakdown(state.month);
   const recent = txs.slice(0, 5);
   return `
@@ -396,6 +408,14 @@ function renderHome() {
       <div class="row"><span class="label">Receitas</span><span class="value">${fmtMoney(income)}</span></div>
       <div class="row"><span class="label">Saldo</span><span class="value">${fmtMoney(balance)}</span></div>
     </div>
+    ${oldExpense > 0 ? `
+    <div class="card" style="margin-top:12px;display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <div style="font-weight:600">Períodos anteriores</div>
+        <div class="hint" style="margin-top:2px">Categoria OLD · fora do total do mês</div>
+      </div>
+      <div style="font-weight:700;color:var(--text-dim)">${fmtMoney(oldExpense)}</div>
+    </div>` : ''}
 
     <div class="section-title">Por categoria</div>
     <div class="card">
