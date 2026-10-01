@@ -64,7 +64,7 @@ const DEFAULT_CATEGORIES = [
   { id: uid(), type: 'expense', name: 'Alimentação', icon: '🍔', color: '#ef4444' },
   { id: uid(), type: 'expense', name: 'Transporte', icon: '🚗', color: '#f97316' },
   { id: uid(), type: 'expense', name: 'Moradia', icon: '🏠', color: '#a855f7' },
-  { id: uid(), type: 'expense', name: 'Saúde', icon: '⚕️', color: '#ec4899' },
+  { id: uid(), type: 'expense', name: 'Saúde', icon: '⚕️', color: '#ec4899', reembolsavel: true },
   { id: uid(), type: 'expense', name: 'Lazer', icon: '🎮', color: '#06b6d4' },
   { id: uid(), type: 'expense', name: 'Educação', icon: '📚', color: '#3b82f6' },
   { id: uid(), type: 'expense', name: 'Compras', icon: '🛍️', color: '#14b8a6' },
@@ -292,6 +292,7 @@ function importRows(rows) {
       paymentMethod: r.paymentMethod,
       cardId,
       installmentsCount: r.paymentMethod === 'credito' ? (r.installmentsCount || 1) : 1,
+      reimbursedAmount: r.reimbursedAmount || 0,
       createdAt: Date.now(),
     });
     ok++;
@@ -310,13 +311,19 @@ function isOldCategory(categoryId) {
   const cat = catById(categoryId);
   return !!cat && cat.name === OLD_CATEGORY_NAME;
 }
+// Valor efetivo de uma despesa já descontando reembolso recebido.
+// É esse valor (não t.amount) que entra em "Gastos do mês" e no breakdown
+// por categoria — o valor bruto fica guardado em t.amount para histórico.
+function netAmount(t) {
+  return t.amount - (t.reimbursedAmount || 0);
+}
 function monthTotals(monthKey) {
   const txs = monthTransactions(monthKey);
   let expense = 0, income = 0, oldExpense = 0;
   for (const t of txs) {
     if (t.type !== 'expense') { income += t.amount; continue; }
-    if (isOldCategory(t.categoryId)) { oldExpense += t.amount; continue; }
-    expense += t.amount;
+    if (isOldCategory(t.categoryId)) { oldExpense += netAmount(t); continue; }
+    expense += netAmount(t);
   }
   return { expense, oldExpense, income, balance: income - expense, txs };
 }
@@ -324,7 +331,7 @@ function categoryBreakdown(monthKey) {
   const txs = monthTransactions(monthKey).filter(t => t.type === 'expense' && !isOldCategory(t.categoryId));
   const map = new Map();
   for (const t of txs) {
-    map.set(t.categoryId, (map.get(t.categoryId) || 0) + t.amount);
+    map.set(t.categoryId, (map.get(t.categoryId) || 0) + netAmount(t));
   }
   const total = [...map.values()].reduce((a, b) => a + b, 0);
   return [...map.entries()]
@@ -471,6 +478,10 @@ function renderTxRow(t) {
     sub = (card ? card.name : 'Cartão');
     if (t.installmentsCount > 1) sub += ` · <span class="badge">${t.installmentsCount}x de ${fmtMoney(t.amount / t.installmentsCount)}</span>`;
   }
+  if (t.reimbursedAmount > 0) {
+    sub += ` · <span class="badge" style="background:var(--income-soft);color:var(--income)">reembolso ${fmtMoney(t.reimbursedAmount)} de ${fmtMoney(t.amount)}</span>`;
+  }
+  const shownAmount = t.type === 'expense' ? netAmount(t) : t.amount;
   return `
   <div class="tx-row" data-action="edit-tx" data-id="${t.id}">
     <div class="tx-icon" style="background:${cat.color}22;color:${cat.color}">${cat.icon}</div>
@@ -478,7 +489,7 @@ function renderTxRow(t) {
       <div class="tx-desc">${escapeHtml(t.description || cat.name)}</div>
       <div class="tx-sub">${sub}</div>
     </div>
-    <div class="tx-amount ${t.type}">${t.type === 'expense' ? '-' : '+'}${fmtMoney(t.amount)}</div>
+    <div class="tx-amount ${t.type}">${t.type === 'expense' ? '-' : '+'}${fmtMoney(shownAmount)}</div>
   </div>`;
 }
 
@@ -616,8 +627,8 @@ function renderCategorias() {
     </div>
     <div class="chip-grid">
       ${list.map(c => `
-        <div class="chip del">
-          <span>${c.icon} ${escapeHtml(c.name)}</span>
+        <div class="chip del" data-action="edit-category" data-id="${c.id}">
+          <span>${c.icon} ${escapeHtml(c.name)}${c.reembolsavel ? ' 💰' : ''}</span>
           <span class="x" data-action="delete-category" data-id="${c.id}">✕</span>
         </div>
       `).join('')}
@@ -888,6 +899,16 @@ function txSheetBody(d) {
       ${expenseCats.map(c => `<div class="chip ${d.categoryId === c.id ? 'selected' : ''}" data-action="tx-set-cat" data-id="${c.id}">${c.icon} ${escapeHtml(c.name)}</div>`).join('') || '<div class="hint">Crie categorias na aba Categorias.</div>'}
     </div>
   </div>
+  ${(() => {
+    const selCat = catById(d.categoryId);
+    if (d.type !== 'expense' || !selCat || !selCat.reembolsavel) return '';
+    return `
+  <div class="field">
+    <label>Reembolso recebido (opcional)</label>
+    <input class="amount-input" id="f-reimbursed" type="text" inputmode="numeric" placeholder="0,00" value="${toMaskedAmount(d.reimbursedAmount)}">
+    <div class="hint">Reduz o valor que conta como gasto do mês — o valor original fica guardado para histórico.</div>
+  </div>`;
+  })()}
   <div class="field">
     <label>Forma de pagamento</label>
     <div class="pay-grid">
@@ -947,8 +968,9 @@ function cardSheetBody(d) {
 }
 
 function categorySheetBody(d) {
+  const isEdit = !!d.id;
   return `
-  <h2>Nova categoria</h2>
+  <h2>${isEdit ? 'Editar categoria' : 'Nova categoria'}</h2>
   <div class="field">
     <div class="toggle-2">
       <button type="button" class="${d.type === 'expense' ? 'active expense' : ''}" data-action="cat-set-type" data-val="expense">Despesa</button>
@@ -971,7 +993,17 @@ function categorySheetBody(d) {
       ${COLOR_CHOICES.map(c => `<div class="color-dot ${d.color === c ? 'selected' : ''}" style="background:${c}" data-action="cat-set-color" data-val="${c}"></div>`).join('')}
     </div>
   </div>
+  ${d.type === 'expense' ? `
+  <div class="field">
+    <label>Reembolso</label>
+    <div class="toggle-2">
+      <button type="button" class="${!d.reembolsavel ? 'active' : ''}" data-action="cat-set-reembolsavel" data-val="0">Não se aplica</button>
+      <button type="button" class="${d.reembolsavel ? 'active' : ''}" data-action="cat-set-reembolsavel" data-val="1">Aceita reembolso</button>
+    </div>
+    <div class="hint">Lançamentos nessa categoria ganham um campo para registrar reembolso depois, que reduz o valor contado como gasto.</div>
+  </div>` : ''}
   <button class="btn" data-action="save-category">Salvar</button>
+  ${isEdit ? `<button class="btn danger" data-action="delete-category" data-id="${d.id}" style="margin-top:10px">Excluir</button>` : ''}
   <button class="close-x" data-action="close-sheet">✕</button>
   `;
 }
@@ -981,7 +1013,7 @@ function afterRender() {}
 
 app.addEventListener('click', onClick);
 app.addEventListener('input', e => {
-  if (e.target.id === 'f-amount') e.target.value = formatAmountDigits(e.target.value);
+  if (e.target.id === 'f-amount' || e.target.id === 'f-reimbursed') e.target.value = formatAmountDigits(e.target.value);
 });
 
 // Antes de qualquer clique que possa disparar um re-render, guarda o que já
@@ -994,7 +1026,7 @@ function syncSheetInputs() {
     'f-amount': 'amount', 'f-desc': 'description', 'f-date': 'date',
     'f-cname': 'name', 'f-closing': 'closingDay', 'f-due': 'dueDay',
     'f-catname': 'name', 'f-installments': 'installmentsCount', 'f-dueday': 'dueDay',
-    'f-import-json': 'text',
+    'f-import-json': 'text', 'f-reimbursed': 'reimbursedAmount',
   };
   for (const [id, key] of Object.entries(fields)) {
     const el = document.getElementById(id);
@@ -1065,6 +1097,8 @@ function onClick(e) {
         const inst = document.getElementById('f-installments');
         d.installmentsCount = Math.max(1, parseInt(inst.value, 10) || 1);
       }
+      const reimbursedEl = document.getElementById('f-reimbursed');
+      const reimbursedAmount = reimbursedEl ? (parseMaskedAmount(reimbursedEl.value) || 0) : 0;
       const tx = {
         id: d.id || uid(),
         type: d.type,
@@ -1075,6 +1109,7 @@ function onClick(e) {
         paymentMethod: d.paymentMethod,
         cardId: d.paymentMethod === 'credito' ? d.cardId : null,
         installmentsCount: d.paymentMethod === 'credito' ? d.installmentsCount : 1,
+        reimbursedAmount,
         createdAt: d.createdAt || Date.now(),
       };
       upsertTransaction(tx);
@@ -1141,7 +1176,16 @@ function onClick(e) {
       render();
       break;
     case 'open-add-category':
-      state.sheet = { type: 'category', data: { type: state.catTypeFilter, icon: ICON_CHOICES[0], color: COLOR_CHOICES[0] } };
+      state.sheet = { type: 'category', data: { type: state.catTypeFilter, icon: ICON_CHOICES[0], color: COLOR_CHOICES[0], reembolsavel: false } };
+      render();
+      break;
+    case 'edit-category': {
+      const cat = catById(el.dataset.id);
+      if (cat) { state.sheet = { type: 'category', data: { ...cat } }; render(); }
+      break;
+    }
+    case 'cat-set-reembolsavel':
+      d.reembolsavel = el.dataset.val === '1';
       render();
       break;
     case 'cat-set-type':
@@ -1159,7 +1203,7 @@ function onClick(e) {
     case 'save-category': {
       const name = document.getElementById('f-catname').value.trim();
       if (!name) { alert('Informe o nome da categoria.'); return; }
-      const cat = { id: d.id || uid(), type: d.type, name, icon: d.icon, color: d.color };
+      const cat = { id: d.id || uid(), type: d.type, name, icon: d.icon, color: d.color, reembolsavel: d.type === 'expense' ? !!d.reembolsavel : false };
       const idx = state.categories.findIndex(c => c.id === cat.id);
       if (idx >= 0) state.categories[idx] = cat; else state.categories.push(cat);
       persist();
@@ -1174,6 +1218,7 @@ function onClick(e) {
       if (confirm('Excluir esta categoria?')) {
         state.categories = state.categories.filter(c => c.id !== id);
         persist();
+        state.sheet = null;
         render();
       }
       break;
