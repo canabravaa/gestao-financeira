@@ -147,6 +147,7 @@ const fb = (typeof FIREBASE_CONFIG !== 'undefined' && FIREBASE_CONFIG.apiKey && 
   : null;
 
 let currentUser = null;
+let authReady = !fb; // sem Firebase configurado não há sessão a esperar
 let unsubscribeSnapshot = null;
 let pushTimer = null;
 
@@ -206,6 +207,7 @@ function signOutUser() {
 if (fb) {
   fb.auth.onAuthStateChanged(user => {
     currentUser = user;
+    authReady = true;
     if (user) attachRemoteSync(user.uid); else detachRemoteSync();
     render();
   });
@@ -349,6 +351,17 @@ function cardInvoices(cardId, count = 6) {
 const app = document.getElementById('app');
 
 function render() {
+  // Com Firebase configurado, os dados locais continuam no navegador mesmo
+  // deslogado — por isso nada é mostrado até a sessão ser confirmada.
+  if (fb && !authReady) {
+    app.innerHTML = `<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;color:var(--text-dim)">Carregando…</div>`;
+    return;
+  }
+  if (fb && !currentUser) {
+    app.innerHTML = renderLockedScreen();
+    afterRender();
+    return;
+  }
   const parts = [];
   parts.push(renderTopbar());
   if (state.tab === 'home') parts.push(renderHome());
@@ -707,6 +720,23 @@ function forecastSheetBody(d) {
   ${isEdit ? `<button class="btn danger" data-action="delete-forecast" data-id="${d.id}" style="margin-top:10px">Excluir</button>` : ''}
   <button class="close-x" data-action="close-sheet" aria-label="Fechar">✕</button>
   `;
+}
+
+function renderLockedScreen() {
+  return `
+  <div style="min-height:100vh;display:flex;flex-direction:column;justify-content:center;padding:24px;max-width:480px;margin:0 auto">
+    <div style="text-align:center;margin-bottom:22px">
+      <div style="font-size:38px">🔒</div>
+      <h1 style="margin:10px 0 4px;font-size:20px">Gestão Financeira</h1>
+      <div class="hint">Entre com seu e-mail para ver seus lançamentos neste aparelho.</div>
+    </div>
+    <div class="field">
+      <label>E-mail</label>
+      <input id="f-login-email" type="text" inputmode="email" autocomplete="email" placeholder="voce@email.com">
+    </div>
+    <button class="btn" data-action="send-magic-link">Enviar link de acesso</button>
+    <div class="hint" style="text-align:center;margin-top:10px">Vamos enviar um link por e-mail — sem senha.</div>
+  </div>`;
 }
 
 function renderConta() {
