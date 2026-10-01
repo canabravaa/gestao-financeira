@@ -443,7 +443,7 @@ function renderHome() {
     <div class="section-title">Por categoria</div>
     <div class="card">
       ${breakdown.length === 0 ? `<div class="hint">Nenhum gasto registrado neste mês.</div>` : breakdown.map(b => `
-        <div class="cat-row">
+        <div class="cat-row" style="cursor:pointer" data-action="open-category-detail" data-cat-id="${b.category.id}">
           <div class="top">
             <span class="name">${b.category.icon} ${escapeHtml(b.category.name)}</span>
             <span class="amount">${fmtMoney(b.amount)} · ${b.pct.toFixed(0)}%</span>
@@ -794,6 +794,19 @@ function importSheetBody(d) {
   `;
 }
 
+function categoryDetailSheetBody(d) {
+  const cat = catById(d.categoryId);
+  if (!cat) return `<h2>Categoria</h2><div class="hint">Categoria não encontrada.</div><button class="close-x" data-action="close-sheet" aria-label="Fechar">✕</button>`;
+  const items = monthTransactions(state.month).filter(t => t.type === 'expense' && t.categoryId === d.categoryId);
+  const total = items.reduce((a, t) => a + t.amount, 0);
+  return `
+  <h2>${cat.icon} ${escapeHtml(cat.name)}</h2>
+  <div class="hint" style="margin-top:-8px;margin-bottom:14px">${monthLabel(state.month)} · ${fmtMoney(total)} · ${items.length} lançamento${items.length === 1 ? '' : 's'}</div>
+  ${items.length === 0 ? `<div class="hint">Nenhum lançamento nesta categoria neste mês.</div>` : `<div class="tx-list">${items.map(renderTxRow).join('')}</div>`}
+  <button class="close-x" data-action="close-sheet" aria-label="Fechar">✕</button>
+  `;
+}
+
 function oldDetailSheetBody() {
   const items = monthTransactions(state.month).filter(t => t.type === 'expense' && isOldCategory(t.categoryId));
   const total = items.reduce((a, t) => a + t.amount, 0);
@@ -815,6 +828,7 @@ function renderSheet() {
   else if (s.type === 'forecast') body = forecastSheetBody(s.data);
   else if (s.type === 'import') body = importSheetBody(s.data);
   else if (s.type === 'old-detail') body = oldDetailSheetBody();
+  else if (s.type === 'category-detail') body = categoryDetailSheetBody(s.data);
   else if (s.type === 'lanc-filter') body = lancFilterSheetBody();
   return `
   <div class="sheet-overlay" data-action="close-sheet-overlay">
@@ -1152,6 +1166,11 @@ function onClick(e) {
       break;
     case 'close-sheet-overlay':
       state.sheet = null;
+      render();
+      break;
+
+    case 'open-category-detail':
+      state.sheet = { type: 'category-detail', data: { categoryId: el.dataset.catId } };
       render();
       break;
 
