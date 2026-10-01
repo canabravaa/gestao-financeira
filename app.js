@@ -98,7 +98,17 @@ const state = {
   sheet: null, // {type: 'transaction'|'card'|'category'|'forecast', data: {...}}
   catTypeFilter: 'expense',
   openCardId: null,
+  lancAllMonths: false,
+  lancPayFilter: 'todos',
+  lancSort: 'data-desc',
 };
+
+const SORT_OPTIONS = [
+  { id: 'data-desc', label: 'Mais recentes' },
+  { id: 'data-asc', label: 'Mais antigos' },
+  { id: 'valor-desc', label: 'Maior valor' },
+  { id: 'valor-asc', label: 'Menor valor' },
+];
 
 function seedIfNeeded() {
   if (!localStorage.getItem(KEYS.categories)) save(KEYS.categories, DEFAULT_CATEGORIES);
@@ -356,7 +366,7 @@ function render() {
 
 function renderTopbar() {
   const titles = { home: 'Início', lancamentos: 'Lançamentos', cartoes: 'Cartões', categorias: 'Categorias', previsao: 'Previsão', conta: 'Conta' };
-  const showMonth = state.tab === 'home' || state.tab === 'lancamentos' || state.tab === 'previsao';
+  const showMonth = state.tab === 'home' || state.tab === 'previsao' || (state.tab === 'lancamentos' && !state.lancAllMonths);
   return `
   <div class="topbar">
     <h1>${titles[state.tab]}</h1>
@@ -459,11 +469,39 @@ function renderTxRow(t) {
   </div>`;
 }
 
+const LANC_SORTERS = {
+  'data-desc': (a, b) => b.date.localeCompare(a.date) || (b.createdAt || 0) - (a.createdAt || 0),
+  'data-asc': (a, b) => a.date.localeCompare(b.date) || (a.createdAt || 0) - (b.createdAt || 0),
+  'valor-desc': (a, b) => b.amount - a.amount,
+  'valor-asc': (a, b) => a.amount - b.amount,
+};
+
 function renderLancamentos() {
-  const txs = monthTransactions(state.month);
+  let txs = state.lancAllMonths ? state.transactions.slice() : monthTransactions(state.month);
+  if (state.lancPayFilter !== 'todos') txs = txs.filter(t => t.paymentMethod === state.lancPayFilter);
+  txs = txs.slice().sort(LANC_SORTERS[state.lancSort] || LANC_SORTERS['data-desc']);
+
+  const payLabel = state.lancPayFilter === 'todos' ? null : (PAY_METHODS.find(p => p.id === state.lancPayFilter) || {}).label;
+  const summary = [state.lancAllMonths ? 'todos os meses' : null, payLabel].filter(Boolean).join(' · ');
+  const header = `
+  <div class="section-title" style="margin-top:0">
+    <span>${txs.length} lançamento${txs.length === 1 ? '' : 's'}${summary ? ' · ' + summary : ''}</span>
+    <a data-action="open-lanc-filter">Filtrar/ordenar</a>
+  </div>`;
+
   if (txs.length === 0) {
-    return `<section class="view">${emptyState('📋', 'Nada por aqui', 'Nenhum lançamento neste mês ainda.')}</section>`;
+    return `<section class="view">${header}${emptyState('📋', 'Nada por aqui', 'Nenhum lançamento encontrado com esse filtro.')}</section>`;
   }
+
+  // Ordenar por valor não combina com agrupar por dia — lista direta nesse caso.
+  if (state.lancSort === 'valor-desc' || state.lancSort === 'valor-asc') {
+    return `
+    <section class="view">
+      ${header}
+      <div class="tx-list">${txs.map(renderTxRow).join('')}</div>
+    </section>`;
+  }
+
   const groups = new Map();
   for (const t of txs) {
     if (!groups.has(t.date)) groups.set(t.date, []);
@@ -471,6 +509,7 @@ function renderLancamentos() {
   }
   return `
   <section class="view">
+    ${header}
     ${[...groups.entries()].map(([date, items]) => `
       <div class="day-group">
         <div class="day-header">${dayLabel(date)}</div>
@@ -478,6 +517,34 @@ function renderLancamentos() {
       </div>
     `).join('')}
   </section>`;
+}
+
+function lancFilterSheetBody() {
+  return `
+  <h2>Filtrar e ordenar</h2>
+  <div class="field">
+    <label>Período</label>
+    <div class="tabs-2">
+      <button class="${!state.lancAllMonths ? 'active' : ''}" data-action="lanc-set-period" data-val="mes">Este mês</button>
+      <button class="${state.lancAllMonths ? 'active' : ''}" data-action="lanc-set-period" data-val="todos">Todos os meses</button>
+    </div>
+  </div>
+  <div class="field">
+    <label>Forma de pagamento</label>
+    <div class="chip-grid">
+      <div class="chip ${state.lancPayFilter === 'todos' ? 'selected' : ''}" data-action="lanc-set-pay" data-val="todos">Todas</div>
+      ${PAY_METHODS.map(p => `<div class="chip ${state.lancPayFilter === p.id ? 'selected' : ''}" data-action="lanc-set-pay" data-val="${p.id}">${p.icon} ${p.label}</div>`).join('')}
+    </div>
+  </div>
+  <div class="field">
+    <label>Ordenar por</label>
+    <div class="chip-grid">
+      ${SORT_OPTIONS.map(s => `<div class="chip ${state.lancSort === s.id ? 'selected' : ''}" data-action="lanc-set-sort" data-val="${s.id}">${s.label}</div>`).join('')}
+    </div>
+  </div>
+  <button class="btn" data-action="close-sheet">Aplicar</button>
+  <button class="close-x" data-action="close-sheet" aria-label="Fechar">✕</button>
+  `;
 }
 
 function renderCartoes() {
@@ -718,6 +785,7 @@ function renderSheet() {
   else if (s.type === 'forecast') body = forecastSheetBody(s.data);
   else if (s.type === 'import') body = importSheetBody(s.data);
   else if (s.type === 'old-detail') body = oldDetailSheetBody();
+  else if (s.type === 'lanc-filter') body = lancFilterSheetBody();
   return `
   <div class="sheet-overlay" data-action="close-sheet-overlay">
     <div class="sheet" data-action="noop">
@@ -1059,6 +1127,23 @@ function onClick(e) {
 
     case 'open-old-detail':
       state.sheet = { type: 'old-detail', data: {} };
+      render();
+      break;
+
+    case 'open-lanc-filter':
+      state.sheet = { type: 'lanc-filter', data: {} };
+      render();
+      break;
+    case 'lanc-set-period':
+      state.lancAllMonths = el.dataset.val === 'todos';
+      render();
+      break;
+    case 'lanc-set-pay':
+      state.lancPayFilter = el.dataset.val;
+      render();
+      break;
+    case 'lanc-set-sort':
+      state.lancSort = el.dataset.val;
       render();
       break;
 
