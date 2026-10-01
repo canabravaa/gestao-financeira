@@ -351,6 +351,7 @@ section.view {
   color: var(--text-dim);
   cursor: pointer;
 }
+.toggle-2 button.active { background: var(--accent-soft); color: var(--accent); }
 .toggle-2 button.active.expense { background: var(--expense-soft); color: var(--expense); }
 .toggle-2 button.active.income { background: var(--income-soft); color: var(--income); }
 
