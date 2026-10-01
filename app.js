@@ -662,7 +662,7 @@ function renderPrevisao() {
         const pct = r.previsto > 0 ? Math.min(100, (r.realizado / r.previsto) * 100) : (r.realizado > 0 ? 100 : 0);
         const over = r.previsto > 0 && r.realizado > r.previsto;
         return `
-        <div class="cat-row">
+        <div class="cat-row" style="cursor:pointer" data-action="open-previsao-category-detail" data-cat-id="${r.category.id}">
           <div class="top">
             <span class="name">${r.category.icon} ${escapeHtml(r.category.name)}</span>
             <span class="amount">${fmtMoney(r.realizado)} / ${fmtMoney(r.previsto)}</span>
@@ -807,6 +807,24 @@ function categoryDetailSheetBody(d) {
   `;
 }
 
+function previsaoCategoryDetailSheetBody(d) {
+  const cat = catById(d.categoryId);
+  if (!cat) return `<h2>Categoria</h2><div class="hint">Categoria não encontrada.</div><button class="close-x" data-action="close-sheet" aria-label="Fechar">✕</button>`;
+  const forecastItems = state.forecasts.filter(f => f.categoryId === d.categoryId);
+  const realizadoItems = monthTransactions(state.month).filter(t => t.type === 'expense' && t.categoryId === d.categoryId);
+  const totalPrevisto = forecastItems.reduce((a, f) => a + f.amount, 0);
+  const totalRealizado = realizadoItems.reduce((a, t) => a + t.amount, 0);
+  return `
+  <h2>${cat.icon} ${escapeHtml(cat.name)}</h2>
+  <div class="hint" style="margin-top:-8px;margin-bottom:14px">${monthLabel(state.month)} · Realizado ${fmtMoney(totalRealizado)} / Previsto ${fmtMoney(totalPrevisto)}</div>
+  <div class="section-title" style="margin-top:0">Previsto</div>
+  ${forecastItems.length === 0 ? `<div class="hint">Nenhuma conta prevista nesta categoria.</div>` : `<div class="tx-list">${forecastItems.map(renderForecastRow).join('')}</div>`}
+  <div class="section-title">Realizado</div>
+  ${realizadoItems.length === 0 ? `<div class="hint">Nenhum lançamento nesta categoria neste mês.</div>` : `<div class="tx-list">${realizadoItems.map(renderTxRow).join('')}</div>`}
+  <button class="close-x" data-action="close-sheet" aria-label="Fechar">✕</button>
+  `;
+}
+
 function oldDetailSheetBody() {
   const items = monthTransactions(state.month).filter(t => t.type === 'expense' && isOldCategory(t.categoryId));
   const total = items.reduce((a, t) => a + t.amount, 0);
@@ -829,6 +847,7 @@ function renderSheet() {
   else if (s.type === 'import') body = importSheetBody(s.data);
   else if (s.type === 'old-detail') body = oldDetailSheetBody();
   else if (s.type === 'category-detail') body = categoryDetailSheetBody(s.data);
+  else if (s.type === 'previsao-category-detail') body = previsaoCategoryDetailSheetBody(s.data);
   else if (s.type === 'lanc-filter') body = lancFilterSheetBody();
   return `
   <div class="sheet-overlay" data-action="close-sheet-overlay">
@@ -1171,6 +1190,10 @@ function onClick(e) {
 
     case 'open-category-detail':
       state.sheet = { type: 'category-detail', data: { categoryId: el.dataset.catId } };
+      render();
+      break;
+    case 'open-previsao-category-detail':
+      state.sheet = { type: 'previsao-category-detail', data: { categoryId: el.dataset.catId } };
       render();
       break;
 
