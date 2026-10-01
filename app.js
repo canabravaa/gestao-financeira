@@ -120,6 +120,28 @@ function loadState() {
   state.transactions = load(KEYS.transactions);
   state.installments = load(KEYS.installments);
   state.forecasts = load(KEYS.forecasts);
+  // Migração: contas previstas antigas não tinham mês (eram uma lista única).
+  // Associa o que já existia ao mês atual, que é como elas já apareciam na tela.
+  let migrated = false;
+  for (const f of state.forecasts) {
+    if (!f.month) { f.month = currentMonthKey(); migrated = true; }
+  }
+  if (migrated) persistLocalOnly();
+}
+// Se o mês ainda não tem nenhuma conta prevista própria, copia as do mês
+// anterior mais recente que tiver — assim cada mês "nasce" com o mesmo
+// baseline do mês passado, mas pode ser ajustado dali pra frente sem mexer
+// nos outros meses.
+function ensureMonthForecasts(monthKey) {
+  if (state.forecasts.some(f => f.month === monthKey)) return;
+  const priorMonths = [...new Set(state.forecasts.map(f => f.month))].filter(m => m < monthKey).sort();
+  if (priorMonths.length === 0) return;
+  const sourceMonth = priorMonths[priorMonths.length - 1];
+  const toCopy = state.forecasts.filter(f => f.month === sourceMonth);
+  for (const f of toCopy) {
+    state.forecasts.push({ id: uid(), description: f.description, amount: f.amount, categoryId: f.categoryId, dueDay: f.dueDay, month: monthKey });
+  }
+  persist();
 }
 function persistLocalOnly() {
   save(KEYS.categories, state.categories);
@@ -638,11 +660,13 @@ function renderCategorias() {
 }
 
 function renderPrevisao() {
-  const totalPrevisto = state.forecasts.reduce((a, f) => a + f.amount, 0);
+  ensureMonthForecasts(state.month);
+  const monthForecasts = state.forecasts.filter(f => f.month === state.month);
+  const totalPrevisto = monthForecasts.reduce((a, f) => a + f.amount, 0);
   const totalRealizado = monthTotals(state.month).expense;
 
   const previstoByCat = new Map();
-  for (const f of state.forecasts) previstoByCat.set(f.categoryId, (previstoByCat.get(f.categoryId) || 0) + f.amount);
+  for (const f of monthForecasts) previstoByCat.set(f.categoryId, (previstoByCat.get(f.categoryId) || 0) + f.amount);
   const realizadoByCat = new Map();
   for (const b of categoryBreakdown(state.month)) realizadoByCat.set(b.category.id, b.amount);
 
@@ -655,7 +679,7 @@ function renderPrevisao() {
     .filter(Boolean)
     .sort((a, b) => b.previsto - a.previsto || b.realizado - a.realizado);
 
-  const sortedForecasts = state.forecasts.slice().sort((a, b) => (a.dueDay || 99) - (b.dueDay || 99));
+  const sortedForecasts = monthForecasts.slice().sort((a, b) => (a.dueDay || 99) - (b.dueDay || 99));
 
   return `
   <section class="view">
@@ -665,7 +689,7 @@ function renderPrevisao() {
       <div class="row"><span class="label">Realizado no mês</span><span class="value">${fmtMoney(totalRealizado)}</span></div>
       <div class="row"><span class="label">Diferença</span><span class="value">${fmtMoney(totalPrevisto - totalRealizado)}</span></div>
     </div>
-    <div class="hint" style="margin:0 4px 4px">"Previsto" é o baseline fixo cadastrado abaixo. "Realizado" é apurado a partir dos lançamentos de ${monthLabel(state.month)}.</div>
+    <div class="hint" style="margin:0 4px 4px">"Previsto" começa igual ao do mês anterior e pode ser ajustado aqui sem afetar outros meses. "Realizado" é apurado a partir dos lançamentos de ${monthLabel(state.month)}.</div>
 
     <div class="section-title">Previsto x realizado por categoria</div>
     <div class="card">
@@ -809,7 +833,7 @@ function categoryDetailSheetBody(d) {
   const cat = catById(d.categoryId);
   if (!cat) return `<h2>Categoria</h2><div class="hint">Categoria não encontrada.</div><button class="close-x" data-action="close-sheet" aria-label="Fechar">✕</button>`;
   const items = monthTransactions(state.month).filter(t => t.type === 'expense' && t.categoryId === d.categoryId);
-  const total = items.reduce((a, t) => a + t.amount, 0);
+  const total = items.reduce((a, t) => a + netAmount(t), 0);
   return `
   <h2>${cat.icon} ${escapeHtml(cat.name)}</h2>
   <div class="hint" style="margin-top:-8px;margin-bottom:14px">${monthLabel(state.month)} · ${fmtMoney(total)} · ${items.length} lançamento${items.length === 1 ? '' : 's'}</div>
@@ -821,10 +845,10 @@ function categoryDetailSheetBody(d) {
 function previsaoCategoryDetailSheetBody(d) {
   const cat = catById(d.categoryId);
   if (!cat) return `<h2>Categoria</h2><div class="hint">Categoria não encontrada.</div><button class="close-x" data-action="close-sheet" aria-label="Fechar">✕</button>`;
-  const forecastItems = state.forecasts.filter(f => f.categoryId === d.categoryId);
+  const forecastItems = state.forecasts.filter(f => f.categoryId === d.categoryId && f.month === state.month);
   const realizadoItems = monthTransactions(state.month).filter(t => t.type === 'expense' && t.categoryId === d.categoryId);
   const totalPrevisto = forecastItems.reduce((a, f) => a + f.amount, 0);
-  const totalRealizado = realizadoItems.reduce((a, t) => a + t.amount, 0);
+  const totalRealizado = realizadoItems.reduce((a, t) => a + netAmount(t), 0);
   return `
   <h2>${cat.icon} ${escapeHtml(cat.name)}</h2>
   <div class="hint" style="margin-top:-8px;margin-bottom:14px">${monthLabel(state.month)} · Realizado ${fmtMoney(totalRealizado)} / Previsto ${fmtMoney(totalPrevisto)}</div>
@@ -1280,7 +1304,7 @@ function onClick(e) {
       if (!d.categoryId) { alert('Escolha uma categoria.'); return; }
       const dueDayRaw = document.getElementById('f-dueday').value;
       const dueDay = dueDayRaw ? parseInt(dueDayRaw, 10) : null;
-      const forecast = { id: d.id || uid(), description, amount, categoryId: d.categoryId, dueDay };
+      const forecast = { id: d.id || uid(), description, amount, categoryId: d.categoryId, dueDay, month: d.month || state.month };
       const idx = state.forecasts.findIndex(x => x.id === forecast.id);
       if (idx >= 0) state.forecasts[idx] = forecast; else state.forecasts.push(forecast);
       persist();
