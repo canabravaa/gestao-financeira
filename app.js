@@ -361,6 +361,27 @@ function categoryBreakdown(monthKey) {
     .filter(x => x.category)
     .sort((a, b) => b.amount - a.amount);
 }
+// Gasto por categoria já comparado ao budget (Previsto) do mês: budgetPct é
+// o quanto do previsto já foi consumido (null se a categoria não tem previsão).
+// Ordena de quem mais consumiu o budget para quem menos; sem previsão vão ao fim.
+function categoryBudgetBreakdown(monthKey) {
+  ensureMonthForecasts(monthKey);
+  const previstoByCat = new Map();
+  for (const f of state.forecasts) {
+    if (f.month === monthKey) previstoByCat.set(f.categoryId, (previstoByCat.get(f.categoryId) || 0) + f.amount);
+  }
+  return categoryBreakdown(monthKey)
+    .map(b => {
+      const previsto = previstoByCat.get(b.category.id) || 0;
+      return { ...b, previsto, budgetPct: previsto > 0 ? (b.amount / previsto) * 100 : null };
+    })
+    .sort((a, b) => {
+      if (a.budgetPct === null && b.budgetPct === null) return b.amount - a.amount;
+      if (a.budgetPct === null) return 1;
+      if (b.budgetPct === null) return -1;
+      return b.budgetPct - a.budgetPct;
+    });
+}
 function cardCommitted(cardId) {
   // soma das parcelas futuras (a partir do mês atual) já registradas para esse cartão
   const cur = currentMonthKey();
@@ -450,7 +471,7 @@ function renderBottomNav() {
 
 function renderHome() {
   const { expense, oldExpense, income, balance, txs } = monthTotals(state.month);
-  const breakdown = categoryBreakdown(state.month);
+  const breakdown = categoryBudgetBreakdown(state.month);
   const recent = txs.slice(0, 5);
   return `
   <section class="view">
@@ -475,9 +496,11 @@ function renderHome() {
         <div class="cat-row" style="cursor:pointer" data-action="open-category-detail" data-cat-id="${b.category.id}">
           <div class="top">
             <span class="name">${b.category.icon} ${escapeHtml(b.category.name)}</span>
-            <span class="amount">${fmtMoney(b.amount)} · ${b.pct.toFixed(0)}%</span>
+            <span class="amount">${b.budgetPct === null
+              ? `${fmtMoney(b.amount)} · sem previsão`
+              : `${fmtMoney(b.amount)} / ${fmtMoney(b.previsto)} · ${b.budgetPct.toFixed(0)}%`}</span>
           </div>
-          <div class="bar-track"><div class="bar-fill" style="width:${b.pct}%;background:${b.category.color}"></div></div>
+          <div class="bar-track"><div class="bar-fill" style="width:${b.budgetPct === null ? 0 : Math.min(100, b.budgetPct)}%;background:${b.budgetPct !== null && b.budgetPct > 100 ? 'var(--expense)' : b.category.color}"></div></div>
         </div>
       `).join('')}
     </div>
